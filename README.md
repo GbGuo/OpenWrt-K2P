@@ -1,19 +1,20 @@
 # Actions-OpenWrt-K2P
 
-官方 OpenWrt **v24.10.8** + 简化 Shadowsocks / VMess（**k2p-proxy-v13**）。
+官方 OpenWrt **v24.10.8** + 官方 **luci-app-shadowsocks-libev**（仅 Shadowsocks，不含 VMess）。
 
 ## 刷机
 
 - Breed **斐讯布局**，只刷 `*squashfs-sysupgrade.bin`
 - 后台：`http://192.168.1.1`
 
-## 使用
+## 使用（服务 → Shadowsocks）
 
-1. **服务 → Shadowsocks**
-2. 在 **添加节点** 框粘贴 `ss://` 或 `vmess://`（一行一条，自动识别）
-3. **保存并应用**
-4. 在 **当前节点** 里选刚导入的节点
-5. 打开 **启用代理**，模式选绕过大陆或全局
-6. 再点一次 **保存并应用**
+只支持 `ss://` 那种节点（aes-256-gcm / chacha20-ietf-poly1305 等）。电脑上的 VMess 节点不要往这里填。
 
-VMess 需要 Xray，16MB 闪存放不下，第一次启用 VMess 会从国内镜像下载到内存（约 1 分钟）。Shadowsocks 不需要下载。
+1. **远程服务器**：添加，填地址、端口、密码、加密方法，保存
+2. **透明代理 (ss-redir)**：启用，服务器选上一步，本地端口 `1234`，模式 `tcp_and_udp`
+3. **访问控制 (ss-rules)**：启用，TCP/UDP 重定向都选这个 ss-redir；接口填 `br-lan`；若整网都走代理，来源默认和目标默认都选 **转发**
+4. **保存并应用**
+5. 电脑不要再开 v2ray，用路由器上网再打开 `www.google.com`
+
+DNS 可选：再开 **隧道 (ss-tunnel)**，本地 `127.0.0.1:8053`，隧道地址 `8.8.8.8:53`，然后在 DHCP/dnsmasq 里把 DNS 指到 `127.0.0.1#8053`。
