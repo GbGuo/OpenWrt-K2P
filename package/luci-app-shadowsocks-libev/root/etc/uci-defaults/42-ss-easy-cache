@@ -1,0 +1,8 @@
+#!/bin/sh
+rm -f /tmp/luci-indexcache* 2>/dev/null || true
+rm -rf /tmp/luci-modulecache /tmp/luci-indexcache 2>/dev/null || true
+rm -f /overlay/upper/www/luci-static/resources/view/shadowsocks-libev/main.js 2>/dev/null || true
+rm -f /overlay/upper/www/luci-static/resources/view/ss-easy/page.js 2>/dev/null || true
+rm -f /overlay/upper/www/luci-static/resources/view/k2p-proxy/index.js 2>/dev/null || true
+rm -rf /overlay/upper/usr/lib/lua/luci 2>/dev/null || true
+exit 0

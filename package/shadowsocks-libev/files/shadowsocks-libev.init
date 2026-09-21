@@ -1,0 +1,542 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2017-2019 Yousong Zhou <yszhou4tech@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+USE_PROCD=1
+START=99
+
+ss_confdir=/var/etc/shadowsocks-libev
+ss_bindir=/usr/bin
+ss_easylog=/tmp/ss-easy.log
+
+ss_log() {
+	echo "$(date '+%F %T') $*" >>"$ss_easylog"
+	logger -t ss-easy "$*"
+}
+
+ssrules_uc="/usr/share/ss-rules/ss-rules.uc"
+ssrules_nft="/etc/nftables.d/90-ss-rules.nft"
+
+ss_mkjson_server_conf() {
+	local cfgserver
+
+	config_get cfgserver "$cfg" server
+	[ -n "$cfgserver" ] || return 1
+	eval "$(validate_server_section "$cfg" ss_validate_mklocal)"
+	validate_server_section "$cfgserver" || return 1
+	[ "$disabled" = 0 ] || return 1
+	ss_mkjson_server_conf_ "$cfgserver"
+}
+
+ss_mkjson_server_conf_() {
+	[ -n "$server_port" ] || return 1
+	[ -z "$server" ] || json_add_string server "$server"
+	json_add_int server_port "$server_port"
+	[ -z "$method" ] || json_add_string method "$method"
+	[ -z "$key" ] || json_add_string key "$key"
+	[ -z "$password" ] || json_add_string password "$password"
+	[ -z "$plugin" ] || json_add_string plugin "$plugin"
+	[ -z "$plugin_opts" ] || json_add_string plugin_opts "$plugin_opts"
+}
+
+ss_mkjson_ss_local_conf() {
+	ss_mkjson_server_conf
+}
+
+ss_mkjson_ss_redir_conf() {
+	ss_mkjson_server_conf
+}
+
+ss_mkjson_ss_server_conf() {
+	ss_mkjson_server_conf_
+}
+
+ss_mkjson_ss_tunnel_conf() {
+	ss_mkjson_server_conf || return 1
+	[ -n "$tunnel_address" ] || return 1
+	json_add_string tunnel_address "$tunnel_address"
+}
+
+ss_xxx() {
+	local cfg="$1"
+	local cfgtype="$2"
+	local bin="$ss_bindir/${cfgtype/_/-}"
+	local confjson="$ss_confdir/$cfgtype.$cfg.json"
+
+	[ -x "$bin" ] || { ss_log "skip $cfgtype.$cfg: no $bin"; return; }
+	eval "$("validate_${cfgtype}_section" "$cfg" ss_validate_mklocal)"
+	"validate_${cfgtype}_section" "$cfg" || { ss_log "validate fail $cfgtype.$cfg"; return; }
+	[ "$disabled" = 0 ] || { ss_log "disabled $cfgtype.$cfg"; return; }
+
+	json_init
+	ss_mkjson_${cfgtype}_conf || { ss_log "json fail $cfgtype.$cfg server=$(uci -q get shadowsocks-libev.$cfg.server)"; return; }
+	json_add_boolean use_syslog 1
+	json_add_boolean ipv6_first "$ipv6_first"
+	json_add_boolean fast_open "$fast_open"
+	json_add_boolean reuse_port "$reuse_port"
+	json_add_boolean no_delay "$no_delay"
+	[ -z "$local_address" ] || json_add_string local_address "$local_address"
+	[ -z "$local_port" ] || json_add_int local_port "$local_port"
+	[ -z "$local_ipv4_address" ] || json_add_string local_ipv4_address "$local_ipv4_address"
+	[ -z "$local_ipv6_address" ] || json_add_string local_ipv6_address "$local_ipv6_address"
+	[ -z "$mode" ] || json_add_string mode "$mode"
+	[ -z "$mtu" ] || json_add_int mtu "$mtu"
+	[ -z "$timeout" ] || json_add_int timeout "$timeout"
+	[ -z "$user" ] || json_add_string user "$user"
+	[ -z "$acl" ] || json_add_string acl "$acl"
+	json_dump -i >"$confjson"
+
+	procd_open_instance "$cfgtype.$cfg"
+	procd_set_param command "$bin" -c "$confjson"
+	[ "$verbose" = 0 ] || procd_append_param command -v
+	if [ -n "$bind_address" ]; then
+		echo "$cfgtype $cfg: uci option bind_address deprecated, please switch to local_address" >&2
+		procd_append_param command -b "$bind_address"
+	fi
+	procd_set_param file "$confjson"
+	procd_set_param respawn
+	procd_close_instance
+	ss_log "started $cfgtype.$cfg json=$confjson"
+	ss_rules_cb
+}
+
+ss_rules_cb() {
+	local cfgserver server
+
+	if [ "$cfgtype" = ss_redir ]; then
+		config_get cfgserver "$cfg" server
+		config_get server "$cfgserver" server
+		ss_redir_servers="$ss_redir_servers $server"
+		if [ "$mode" = tcp_only -o "$mode" = "tcp_and_udp" ]; then
+			eval "ss_rules_redir_tcp_$cfg=$local_port"
+		fi
+		if [ "$mode" = udp_only -o "$mode" = "tcp_and_udp" ]; then
+			eval "ss_rules_redir_udp_$cfg=$local_port"
+		fi
+	fi
+}
+
+ss_rules_nft_gen() {
+	local cfg="ss_rules"
+	local cfgtype
+	local local_port_tcp local_port_udp
+	local remote_servers
+
+	[ -s "$ssrules_uc" ] || return 1
+
+	config_get cfgtype "$cfg" TYPE
+	[ "$cfgtype" = ss_rules ] || return 1
+
+	eval "$(validate_ss_rules_section "$cfg" ss_validate_mklocal)"
+	validate_ss_rules_section "$cfg" || return 1
+	[ "$disabled" = 0 ] || return 2
+
+	eval local_port_tcp="\$ss_rules_redir_tcp_$redir_tcp"
+	eval local_port_udp="\$ss_rules_redir_udp_$redir_udp"
+	[ -n "$local_port_tcp" -o -n "$local_port_udp" ] || return 1
+	remote_servers="$(echo $ss_redir_servers \
+		| tr ' ' '\n' \
+		| sort -u \
+		| xargs -n 1 resolveip \
+		| sort -u)"
+
+	local tmp="/tmp/ssrules"
+	json_init
+	json_add_string o_remote_servers "$remote_servers"
+	json_add_int o_redir_tcp_port "$local_port_tcp"
+	json_add_int o_redir_udp_port "$local_port_udp"
+	json_add_string o_ifnames "$ifnames"
+	json_add_string o_local_default "$local_default"
+	json_add_string o_src_bypass "$src_ips_bypass"
+	json_add_string o_src_forward "$src_ips_forward"
+	json_add_string o_src_checkdst "$src_ips_checkdst"
+	json_add_string o_src_default "$src_default"
+	json_add_string o_dst_bypass "$dst_ips_bypass"
+	json_add_string o_dst_forward "$dst_ips_forward"
+	json_add_string o_dst_bypass_file "$dst_ips_bypass_file"
+	json_add_string o_dst_forward_file "$dst_ips_forward_file"
+	json_add_string o_dst_default "$dst_default"
+	json_add_string o_nft_tcp_extra "$nft_tcp_extra"
+	json_add_string o_nft_udp_extra "$nft_udp_extra"
+	json_dump -i >"$tmp.json"
+
+	if utpl -S -F "$tmp.json" "$ssrules_uc" >"$tmp.nft" \
+		&& ! cmp -s "$tmp.nft" "$ssrules_nft"; then
+		echo "table inet chk {include \"$tmp.nft\";}" >"$tmp.nft.chk"
+		if nft -f "$tmp.nft.chk" -c; then
+			mv "$tmp.nft" "$ssrules_nft"
+			fw4 restart
+		fi
+		rm -f "$tmp.nft.chk"
+	fi
+	rm -f "$tmp.json"
+	rm -f "$tmp.nft"
+}
+
+ss_rules_nft_reset() {
+	if [ -f "$ssrules_nft" ]; then
+		rm -f "$ssrules_nft"
+		fw4 restart
+	fi
+}
+
+ss_rules() {
+	if ! ss_rules_nft_gen; then
+		ss_rules_nft_reset
+	fi
+}
+
+ss_easy_dns() {
+	local enabled="$1"
+	mkdir -p /tmp/dnsmasq.d
+	if [ "$enabled" = 1 ]; then
+		printf '%s\n' 'no-resolv' 'server=127.0.0.1#8053' >/tmp/dnsmasq.d/ss-easy.conf
+	else
+		rm -f /tmp/dnsmasq.d/ss-easy.conf
+	fi
+	[ -x /etc/init.d/dnsmasq ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+}
+
+ss_json_esc() {
+	echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+ss_xray_write() {
+	local node="$1"
+	local host port uuid aid net tls path whost security proto users
+	host=$(uci -q get shadowsocks-libev."$node".server)
+	port=$(uci -q get shadowsocks-libev."$node".server_port)
+	uuid=$(uci -q get shadowsocks-libev."$node".uuid)
+	[ -n "$uuid" ] || uuid=$(uci -q get shadowsocks-libev."$node".password)
+	aid=$(uci -q get shadowsocks-libev."$node".alter_id)
+	net=$(uci -q get shadowsocks-libev."$node".network)
+	tls=$(uci -q get shadowsocks-libev."$node".tls)
+	path=$(uci -q get shadowsocks-libev."$node".ws_path)
+	whost=$(uci -q get shadowsocks-libev."$node".ws_host)
+	security=$(uci -q get shadowsocks-libev."$node".method)
+	proto=$(uci -q get shadowsocks-libev."$node".protocol)
+	[ -n "$aid" ] || aid=0
+	[ -n "$net" ] || net=tcp
+	[ -n "$security" ] || security=auto
+	[ "$proto" = vless ] && proto=vless || proto=vmess
+	case "$security" in
+		aes-128-gcm|aes-256-gcm|chacha20-ietf-poly1305|auto|none) ;;
+		*) security=auto ;;
+	esac
+	if [ "$proto" = vless ]; then
+		users="{\"id\": \"$(ss_json_esc "$uuid")\", \"encryption\": \"none\"}"
+	else
+		users="{\"id\": \"$(ss_json_esc "$uuid")\", \"alterId\": ${aid}, \"security\": \"$(ss_json_esc "$security")\"}"
+	fi
+	mkdir -p /var/etc
+	cat >/var/etc/xray.json <<EOF
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {"tag": "redir", "port": 1234, "protocol": "dokodemo-door", "settings": {"network": "tcp,udp", "followRedirect": true}, "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}},
+    {"tag": "dns", "listen": "127.0.0.1", "port": 8053, "protocol": "dokodemo-door", "settings": {"address": "8.8.8.8", "port": 53, "network": "tcp,udp"}}
+  ],
+  "outbounds": [
+    {
+      "protocol": "$proto",
+      "settings": {"vnext": [{"address": "$(ss_json_esc "$host")", "port": ${port:-0}, "users": [$users]}]},
+      "streamSettings": {
+        "network": "$(ss_json_esc "$net")",
+        "security": "$([ "$tls" = tls ] && echo tls || echo none)"$([ "$net" = ws ] && printf ',\n        "wsSettings": {"path": "%s", "headers": {"Host": "%s"}}' "$(ss_json_esc "$path")" "$(ss_json_esc "$whost")")$([ "$tls" = tls ] && printf ',\n        "tlsSettings": {"serverName": "%s"}' "$(ss_json_esc "${whost:-$host}")")
+      }
+    }
+  ]
+}
+EOF
+}
+
+ss_copy_easy_remote() {
+	local node="$1"
+	local host port method password key plugin plugin_opts
+	host=$(uci -q get shadowsocks-libev."$node".server)
+	port=$(uci -q get shadowsocks-libev."$node".server_port)
+	method=$(uci -q get shadowsocks-libev."$node".method)
+	password=$(uci -q get shadowsocks-libev."$node".password)
+	key=$(uci -q get shadowsocks-libev."$node".key)
+	plugin=$(uci -q get shadowsocks-libev."$node".plugin)
+	plugin_opts=$(uci -q get shadowsocks-libev."$node".plugin_opts)
+	# Keep the imported cipher. Do not invent a different method.
+	if [ -n "$plugin" ] && [ ! -x "/usr/bin/$plugin" ] && [ ! -x "/usr/bin/${plugin##*/}" ]; then
+		logger -t ss-easy "skip plugin $plugin (binary missing), use plain SS"
+		plugin=
+		plugin_opts=
+	fi
+	uci -q set shadowsocks-libev.easy_remote=server
+	uci -q set shadowsocks-libev.easy_remote.disabled=0
+	uci -q set shadowsocks-libev.easy_remote.server="$host"
+	uci -q set shadowsocks-libev.easy_remote.server_port="$port"
+	uci -q set shadowsocks-libev.easy_remote.method="$method"
+	uci -q set shadowsocks-libev.easy_remote.password="$password"
+	[ -n "$key" ] && uci -q set shadowsocks-libev.easy_remote.key="$key" || uci -q delete shadowsocks-libev.easy_remote.key
+	if [ -n "$plugin" ]; then
+		uci -q set shadowsocks-libev.easy_remote.plugin="$plugin"
+		uci -q set shadowsocks-libev.easy_remote.plugin_opts="$plugin_opts"
+	else
+		uci -q delete shadowsocks-libev.easy_remote.plugin
+		uci -q delete shadowsocks-libev.easy_remote.plugin_opts
+	fi
+}
+
+ss_easy_sync() {
+	local enabled mode node remote on proto typ
+	enabled=$(uci -q get shadowsocks-libev.easy.enabled)
+	[ -n "$enabled" ] || return 0
+	mode=$(uci -q get shadowsocks-libev.easy.mode)
+	node=$(uci -q get shadowsocks-libev.easy.node)
+	[ -z "$node" ] && node=$(uci -q get shadowsocks-libev.easy.server)
+	proto=$(uci -q get shadowsocks-libev."$node".protocol)
+	[ -n "$proto" ] || proto=ss
+	[ "$enabled" = 1 ] && [ -n "$node" ] && on=1 || on=0
+
+	uci -q set shadowsocks-libev.sss0.disabled=1
+	uci -q set shadowsocks-libev.hi.disabled=1
+	uci -q set shadowsocks-libev.hj.disabled=1
+
+	ss_on_ss=0
+	[ "$on" = 1 ] && [ "$proto" = ss ] && ss_on_ss=1
+
+	# Official ss-redir only accepts UCI type "server" as remote.
+	remote=
+	if [ "$ss_on_ss" = 1 ]; then
+		typ=$(uci -q get "shadowsocks-libev.$node")
+		if [ "$typ" = server ]; then
+			remote=$node
+			uci -q set shadowsocks-libev."$node".disabled=0
+		else
+			ss_copy_easy_remote "$node"
+			remote=easy_remote
+		fi
+	fi
+	[ -n "$remote" ] || remote=easy_remote
+	ss_log "sync enabled=$enabled on=$on proto=$proto node=$node remote=$remote"
+
+	uci -q batch <<-EOF
+		set shadowsocks-libev.easy_redir=ss_redir
+		set shadowsocks-libev.easy_redir.server='$remote'
+		set shadowsocks-libev.easy_redir.local_address='0.0.0.0'
+		set shadowsocks-libev.easy_redir.local_port='1234'
+		set shadowsocks-libev.easy_redir.mode='tcp_and_udp'
+		set shadowsocks-libev.easy_redir.timeout='60'
+		set shadowsocks-libev.easy_redir.disabled='$([ "$ss_on_ss" = 1 ] && echo 0 || echo 1)'
+		set shadowsocks-libev.easy_dns=ss_tunnel
+		set shadowsocks-libev.easy_dns.server='$remote'
+		set shadowsocks-libev.easy_dns.local_address='127.0.0.1'
+		set shadowsocks-libev.easy_dns.local_port='8053'
+		set shadowsocks-libev.easy_dns.tunnel_address='8.8.8.8:53'
+		set shadowsocks-libev.easy_dns.mode='tcp_and_udp'
+		set shadowsocks-libev.easy_dns.timeout='60'
+		set shadowsocks-libev.easy_dns.disabled='$([ "$ss_on_ss" = 1 ] && echo 0 || echo 1)'
+		set shadowsocks-libev.ss_rules=ss_rules
+		set shadowsocks-libev.ss_rules.redir_tcp='easy_redir'
+		set shadowsocks-libev.ss_rules.redir_udp='easy_redir'
+		set shadowsocks-libev.ss_rules.ifnames='br-lan'
+		set shadowsocks-libev.ss_rules.disabled='$([ "$on" = 1 ] && echo 0 || echo 1)'
+	EOF
+
+	rm -f /var/etc/xray.json
+	if [ "$on" = 1 ] && { [ "$proto" = vmess ] || [ "$proto" = vless ]; }; then
+		ss_xray_write "$node"
+		if [ -x /tmp/xray-root/usr/bin/xray ] || [ -x /usr/bin/xray ]; then
+			ss_log "xray binary ready"
+		else
+			on=0
+			rm -f /var/etc/xray.json
+			uci -q set shadowsocks-libev.ss_rules.disabled=1
+			ss_log "xray missing; fetch in background, do not hijack DNS"
+			if mkdir /tmp/xray-fetching 2>/dev/null; then
+				( /usr/libexec/xray-ram-fetch.sh; rmdir /tmp/xray-fetching 2>/dev/null; /etc/init.d/shadowsocks-libev restart ) >>/tmp/xray-ram.log 2>&1 &
+			fi
+		fi
+	fi
+
+	if [ "$mode" = global ]; then
+		uci -q batch <<-EOF
+			set shadowsocks-libev.ss_rules.src_default='forward'
+			set shadowsocks-libev.ss_rules.dst_default='forward'
+			set shadowsocks-libev.ss_rules.local_default='forward'
+			delete shadowsocks-libev.ss_rules.dst_ips_bypass_file
+		EOF
+	else
+		uci -q batch <<-EOF
+			set shadowsocks-libev.ss_rules.src_default='checkdst'
+			set shadowsocks-libev.ss_rules.dst_default='forward'
+			set shadowsocks-libev.ss_rules.local_default='checkdst'
+			set shadowsocks-libev.ss_rules.dst_ips_bypass_file='/usr/share/ss-easy/chnroute.txt'
+		EOF
+	fi
+	uci -q commit shadowsocks-libev
+	ss_easy_dns "$on"
+}
+
+start_service() {
+	local cfgtype xray
+
+	mkdir -p "$ss_confdir"
+	ss_easy_sync
+	config_load shadowsocks-libev
+	for cfgtype in ss_local ss_redir ss_server ss_tunnel; do
+		config_foreach ss_xxx "$cfgtype" "$cfgtype"
+	done
+	if [ "$(uci -q get shadowsocks-libev.easy.enabled)" = 1 ]; then
+		ss_redir_servers="$ss_redir_servers $(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).server)"
+		# VMess uses Xray on :1234, not ss-redir, so nft ports must be set here.
+		# SS lets ss_xxx/ss_rules_cb set ports only when ss-redir actually started.
+		if { [ "$(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).protocol)" = vmess ] \
+			|| [ "$(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).protocol)" = vless ]; } \
+			&& { [ -x /tmp/xray-root/usr/bin/xray ] || [ -x /usr/bin/xray ]; }; then
+			ss_rules_redir_tcp_easy_redir=1234
+			ss_rules_redir_udp_easy_redir=1234
+		fi
+	fi
+	ss_rules
+	if [ -s /var/etc/xray.json ]; then
+		xray=/tmp/xray-root/usr/bin/xray
+		[ -x "$xray" ] || xray=/usr/bin/xray
+		if [ -x "$xray" ]; then
+			procd_open_instance xray
+			procd_set_param command "$xray" run -c /var/etc/xray.json
+			procd_set_param file /var/etc/xray.json
+			procd_set_param respawn
+			procd_close_instance
+			ss_log "started xray $xray"
+		else
+			ss_log "vmess needs Xray in RAM; see /tmp/xray-ram.log"
+		fi
+	fi
+	/usr/libexec/ss-easy-status.sh >/dev/null 2>&1 || true
+}
+
+stop_service() {
+	ss_rules_nft_reset
+	rm -rf "$ss_confdir"
+	ss_easy_dns 0
+}
+
+service_triggers() {
+	procd_add_reload_interface_trigger wan
+	procd_add_reload_trigger shadowsocks-libev
+	procd_open_validate
+	validate_server_section
+	validate_ss_local_section
+	validate_ss_redir_section
+	validate_ss_rules_section
+	validate_ss_server_section
+	validate_ss_tunnel_section
+	procd_close_validate
+}
+
+ss_validate_mklocal() {
+	local tuple opts
+
+	shift 2
+	for tuple in "$@"; do
+		opts="${tuple%%:*} $opts"
+	done
+	[ -z "$opts" ] || echo "local $opts"
+}
+
+ss_validate() {
+	uci_validate_section shadowsocks-libev "$@"
+}
+
+validate_common_server_options_() {
+	local cfgtype="$1"; shift
+	local cfg="$1"; shift
+	local func="$1"; shift
+	local stream_methods='"table", "rc4", "rc4-md5", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "bf-cfb", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "salsa20", "chacha20", "chacha20-ietf"'
+	local aead_methods='"aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305"'
+
+	"${func:-ss_validate}" "$cfgtype" "$cfg" "$@" \
+		'disabled:bool:0' \
+		'server:host' \
+		'server_port:port' \
+		'password:string' \
+		'key:string' \
+		"method:or($stream_methods, $aead_methods)" \
+		'plugin:string' \
+		'plugin_opts:string'
+}
+
+validate_common_client_options_() {
+	validate_common_options_ "$@" \
+		'server:uci("shadowsocks-libev", "@server")' \
+		'local_address:ipaddr:0.0.0.0' \
+		'local_port:port'
+}
+
+validate_common_options_() {
+	local cfgtype="$1"; shift
+	local cfg="$1"; shift
+	local func="$1"; shift
+
+	"${func:-ss_validate}" "$cfgtype" "$cfg" "$@" \
+		'disabled:bool:0' \
+		'fast_open:bool:0' \
+		'ipv6_first:bool:0' \
+		'no_delay:bool:0' \
+		'reuse_port:bool:0' \
+		'verbose:bool:0' \
+		'mode:or("tcp_only", "udp_only", "tcp_and_udp"):tcp_only' \
+		'mtu:uinteger' \
+		'timeout:uinteger' \
+		'user:string'
+}
+
+validate_server_section() {
+	validate_common_server_options_ server "$1" "$2"
+}
+
+validate_ss_local_section() {
+	validate_common_client_options_ ss_local "$1" "$2" \
+		'acl:file'
+}
+
+validate_ss_redir_section() {
+	validate_common_client_options_ ss_redir "$1" "$2"
+}
+
+validate_ss_rules_section() {
+	"${2:-ss_validate}" ss_rules "$1" \
+		'disabled:bool:0' \
+		'redir_tcp:uci("shadowsocks-libev", "@ss_redir")' \
+		'redir_udp:uci("shadowsocks-libev", "@ss_redir")' \
+		'src_ips_bypass:or(ipaddr,cidr)' \
+		'src_ips_forward:or(ipaddr,cidr)' \
+		'src_ips_checkdst:or(ipaddr,cidr)' \
+		'dst_ips_bypass_file:file' \
+		'dst_ips_bypass:or(ipaddr,cidr)' \
+		'dst_ips_forward_file:file' \
+		'dst_ips_forward:or(ipaddr,cidr)' \
+		'src_default:or("bypass", "forward", "checkdst"):checkdst' \
+		'dst_default:or("bypass", "forward"):bypass' \
+		'local_default:or("bypass", "forward", "checkdst"):bypass' \
+		'nft_tcp_extra:string' \
+		'nft_udp_extra:string' \
+		'ifnames:maxlength(15)'
+}
+
+validate_ss_server_section() {
+	validate_common_server_options_ ss_server "$1" \
+		validate_common_options_ \
+		"$2" \
+		'local_address:ipaddr' \
+		'local_ipv4_address:ip4addr' \
+		'local_ipv6_address:ip6addr' \
+		'bind_address:ipaddr' \
+		'acl:file'
+}
+
+validate_ss_tunnel_section() {
+	validate_common_client_options_ ss_tunnel "$1" \
+		"$2" \
+		'tunnel_address:regex(".+\:[0-9]+")'
+}

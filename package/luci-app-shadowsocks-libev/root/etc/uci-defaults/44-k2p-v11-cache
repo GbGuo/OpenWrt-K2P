@@ -1,0 +1,4 @@
+#!/bin/sh
+rm -f /tmp/luci-indexcache* 2>/dev/null || true
+rm -rf /tmp/luci-modulecache /tmp/luci-indexcache 2>/dev/null || true
+exit 0

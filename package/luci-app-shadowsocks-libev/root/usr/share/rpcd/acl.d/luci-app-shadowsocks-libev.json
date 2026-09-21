@@ -1,0 +1,30 @@
+{
+	"luci-app-shadowsocks-libev": {
+		"description": "Grant access to Shadowsocks",
+		"read": {
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"uci": [ "shadowsocks-libev" ]
+		},
+		"write": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"file": {
+				"/etc/init.d/shadowsocks-libev": [ "exec" ],
+				"/usr/libexec/xray-ram-fetch.sh": [ "exec" ],
+				"/usr/libexec/ss-easy-apply.sh": [ "exec" ],
+				"/usr/libexec/ss-easy-probe.sh": [ "exec" ],
+				"/usr/libexec/ss-easy-status.sh": [ "exec" ],
+				"/tmp/xray-ram.log": [ "read" ],
+				"/tmp/ss-easy.log": [ "read" ],
+				"/tmp/ss-easy-status.txt": [ "read" ],
+				"/tmp/ss-easy-probe.txt": [ "read" ],
+				"/tmp/ss-easy-probe.log": [ "read" ],
+				"/tmp/ss-easy-ui.txt": [ "read", "write" ]
+			},
+			"uci": [ "shadowsocks-libev" ]
+		}
+	}
+}

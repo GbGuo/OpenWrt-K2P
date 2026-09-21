@@ -1,0 +1,17 @@
+#!/bin/sh
+uci -q get shadowsocks-libev.easy >/dev/null || {
+	uci -q batch <<-EOF
+		set shadowsocks-libev.easy=easy
+		set shadowsocks-libev.easy.enabled='0'
+		set shadowsocks-libev.easy.mode='bypass'
+		set shadowsocks-libev.easy.node=''
+	EOF
+}
+old=$(uci -q get shadowsocks-libev.easy.server)
+[ -n "$old" ] && uci -q set shadowsocks-libev.easy.node="$old"
+uci -q set shadowsocks-libev.sss0.disabled=1
+uci -q set shadowsocks-libev.hi.disabled=1
+uci -q set shadowsocks-libev.hj.disabled=1
+uci -q commit shadowsocks-libev
+/etc/init.d/shadowsocks-libev enable >/dev/null 2>&1 || true
+exit 0

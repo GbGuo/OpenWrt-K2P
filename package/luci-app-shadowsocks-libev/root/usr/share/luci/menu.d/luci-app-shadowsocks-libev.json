@@ -1,0 +1,13 @@
+{
+	"admin/services/k2p-v11": {
+		"title": "简易代理",
+		"order": 58,
+		"action": {
+			"type": "view",
+			"path": "k2p-v11/page"
+		},
+		"depends": {
+			"acl": [ "luci-app-shadowsocks-libev" ]
+		}
+	}
+}
