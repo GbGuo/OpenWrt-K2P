@@ -5,14 +5,15 @@
 'require fs';
 
 var conf = 'shadowsocks-libev';
-var PAGE = 'k2p-proxy-v11';
+var PAGE = 'k2p-proxy-v12';
 var latencies = {};
 
 function parseProbe(text) {
+	latencies = {};
 	String(text || '').split(/\n/).forEach(function(line) {
-		var i = line.indexOf('=');
-		if (i > 0)
-			latencies[line.slice(0, i)] = line.slice(i + 1);
+		var m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+		if (m && m[1] !== 'none' && m[1] !== 'ids')
+			latencies[m[1]] = m[2];
 	});
 }
 
@@ -509,11 +510,12 @@ return view.extend({
 				lines.push([
 					'N', s['.name'], s.protocol || 'ss', s.alias || '', s.server || '',
 					s.server_port || '', s.method || '', s.password || '', s.uuid || '',
-					s.alter_id || '', s.network || '', s.tls || '', s.ws_host || '', s.ws_path || ''
+					s.alter_id || '', s.network || '', s.tls || '', s.ws_host || '', s.ws_path || '',
+					s.plugin || '', s.plugin_opts || ''
 				].join('\t'));
 			});
-			return fs.write('/tmp/ss-easy-ui.txt', lines.join('\n') + '\n').then(function() {
-				return uci.save();
+			return uci.save().then(function() {
+				return fs.write('/tmp/ss-easy-ui.txt', lines.join('\n') + '\n').catch(function() {});
 			}).then(function() {
 				if (doApply && typeof uci.apply === 'function')
 					return uci.apply(0);
@@ -521,7 +523,7 @@ return view.extend({
 		}
 
 		function loadStatus() {
-			return fs.exec('/usr/libexec/ss-easy-status.sh').then(function(res) {
+			return fs.exec('/usr/libexec/ss-easy-status.sh', [], null, 20000).then(function(res) {
 				statusBox.textContent = (res && res.stdout) || '';
 			}).catch(function(err) {
 				statusBox.textContent = String(err);
@@ -555,9 +557,9 @@ return view.extend({
 				}
 				statusBox.textContent = _('正在保存并后台启动，请等几秒再看下面的状态…');
 				return persist(true).then(function() {
-					return fs.exec('/usr/libexec/ss-easy-apply.sh');
+					return fs.exec('/usr/libexec/ss-easy-apply.sh', [], null, 120000);
 				}).then(function() {
-					ui.addNotification(null, E('p', _('已保存。VMess 会在后台下载 Xray，不再卡住页面。看下面状态。')), 'info');
+					ui.addNotification(null, E('p', _('已保存。请看下面状态：ss-redir/xray 必须在跑，listen-1234 不能是 none。VMess 首次会后台下载 Xray。')), 'info');
 					return loadStatus();
 				}).catch(function(err) {
 					statusBox.textContent = String(err);
@@ -570,13 +572,16 @@ return view.extend({
 			class: 'btn',
 			click: ui.createHandlerFn(this, function() {
 				statusBox.textContent = _('正在测每个节点到路由器的 TCP 延迟…');
-				return fs.exec('/usr/libexec/ss-easy-probe.sh').then(function(res) {
+				return fs.exec('/usr/libexec/ss-easy-probe.sh', [], null, 60000).then(function(res) {
 					var out = (res && (res.stdout || res.stderr)) || '';
-					parseProbe(out);
-					if (!out)
-						out = _('探测没有输出。code=%s').format(res && res.code);
-					statusBox.textContent = out;
-					refresh();
+					return fs.read('/tmp/ss-easy-probe.txt').catch(function() { return out; }).then(function(fileOut) {
+						parseProbe(fileOut || out);
+						return fs.read('/tmp/ss-easy-probe.log').catch(function() { return ''; }).then(function(logtxt) {
+							statusBox.textContent = (fileOut || out || _('探测没有输出。code=%s').format(res && res.code))
+								+ (logtxt ? '\n---- log ----\n' + logtxt : '');
+							refresh();
+						});
+					});
 				}).catch(function(err) {
 					statusBox.textContent = String(err);
 				});
@@ -587,7 +592,7 @@ return view.extend({
 
 		return E('div', { class: 'cbi-map', id: PAGE }, [
 			E('h2', {}, _('简易代理')),
-			E('p', {}, _('版本 %s：保存不再卡死页面。用「测试延迟」看路由器能不能连上节点，状态栏能看到 ss-redir / Xray 是否在跑。').format(PAGE)),
+			E('p', {}, _('版本 %s：延迟是路由器到节点的 TCP，不是 Google。开代理后看状态里 ss-redir/xray 和 listen-1234。').format(PAGE)),
 			E('div', { class: 'cbi-section' }, [
 				E('h3', {}, _('开关')),
 				E('div', { class: 'cbi-value' }, [

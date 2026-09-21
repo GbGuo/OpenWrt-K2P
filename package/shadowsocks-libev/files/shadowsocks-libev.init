@@ -18,6 +18,50 @@ ss_log() {
 	logger -t ss-easy "$*"
 }
 
+ss_listening() {
+	netstat -ln 2>/dev/null | grep -q ":$1" && return 0
+	ss -ln 2>/dev/null | grep -q ":$1" && return 0
+	return 1
+}
+
+ss_resolve4() {
+	local host="$1" ip
+	[ -n "$host" ] || return 1
+	echo "$host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && { echo "$host"; return 0; }
+	ip=$(resolveip -t 3 -4 "$host" 2>/dev/null | head -1)
+	[ -n "$ip" ] || return 1
+	echo "$ip"
+}
+
+ss_xray_bin() {
+	if [ -x /tmp/xray-root/usr/bin/xray ]; then
+		echo /tmp/xray-root/usr/bin/xray
+		return 0
+	fi
+	if [ -x /usr/bin/xray ]; then
+		echo /usr/bin/xray
+		return 0
+	fi
+	return 1
+}
+
+ss_fetch_xray_bg() {
+	ss_log "xray missing; fetch in background (DNS not hijacked)"
+	if mkdir /tmp/xray-fetching 2>/dev/null; then
+		( /usr/libexec/xray-ram-fetch.sh; rmdir /tmp/xray-fetching 2>/dev/null; /etc/init.d/shadowsocks-libev restart ) >>/tmp/xray-ram.log 2>&1 &
+	fi
+}
+
+ss_method_libev_ok() {
+	case "$1" in
+		aes-128-gcm|aes-192-gcm|aes-256-gcm|chacha20-ietf-poly1305|xchacha20-ietf-poly1305|\
+		aes-128-cfb|aes-192-cfb|aes-256-cfb|aes-128-ctr|aes-192-ctr|aes-256-ctr|\
+		chacha20-ietf|chacha20|rc4-md5|table|bf-cfb|camellia-128-cfb|camellia-192-cfb|camellia-256-cfb|salsa20)
+			return 0 ;;
+	esac
+	return 1
+}
+
 ssrules_uc="/usr/share/ss-rules/ss-rules.uc"
 ssrules_nft="/etc/nftables.d/90-ss-rules.nft"
 
@@ -132,17 +176,17 @@ ss_rules_nft_gen() {
 	[ "$cfgtype" = ss_rules ] || return 1
 
 	eval "$(validate_ss_rules_section "$cfg" ss_validate_mklocal)"
-	validate_ss_rules_section "$cfg" || return 1
-	[ "$disabled" = 0 ] || return 2
+	validate_ss_rules_section "$cfg" || { ss_log "nft skip: ss_rules validate fail"; return 1; }
+	[ "$disabled" = 0 ] || { ss_log "nft skip: ss_rules disabled"; return 2; }
 
 	eval local_port_tcp="\$ss_rules_redir_tcp_$redir_tcp"
 	eval local_port_udp="\$ss_rules_redir_udp_$redir_udp"
-	[ -n "$local_port_tcp" -o -n "$local_port_udp" ] || return 1
-	remote_servers="$(echo $ss_redir_servers \
-		| tr ' ' '\n' \
-		| sort -u \
-		| xargs -n 1 resolveip \
-		| sort -u)"
+	[ -n "$local_port_tcp" -o -n "$local_port_udp" ] || { ss_log "nft skip: no redir port (ss-redir/xray did not start)"; return 1; }
+	remote_servers="$(echo $ss_redir_servers | tr ' ' '\n' | sort -u | while read -r h; do
+		[ -n "$h" ] || continue
+		ss_resolve4 "$h" || echo "$h"
+	done | sort -u)"
+	ss_log "nft ports tcp=$local_port_tcp udp=$local_port_udp remotes=$remote_servers"
 
 	local tmp="/tmp/ssrules"
 	json_init
@@ -164,17 +208,36 @@ ss_rules_nft_gen() {
 	json_add_string o_nft_udp_extra "$nft_udp_extra"
 	json_dump -i >"$tmp.json"
 
-	if utpl -S -F "$tmp.json" "$ssrules_uc" >"$tmp.nft" \
-		&& ! cmp -s "$tmp.nft" "$ssrules_nft"; then
-		echo "table inet chk {include \"$tmp.nft\";}" >"$tmp.nft.chk"
-		if nft -f "$tmp.nft.chk" -c; then
-			mv "$tmp.nft" "$ssrules_nft"
-			fw4 restart
-		fi
-		rm -f "$tmp.nft.chk"
+	if command -v utpl >/dev/null 2>&1; then
+		utpl -S -F "$tmp.json" "$ssrules_uc" >"$tmp.nft" 2>"$tmp.utpl.err" || true
+	elif command -v ucode >/dev/null 2>&1; then
+		ucode -S -F "$tmp.json" "$ssrules_uc" >"$tmp.nft" 2>"$tmp.utpl.err" || true
+	else
+		ss_log "nft gen fail: utpl/ucode missing"
+		rm -f "$tmp.json"
+		return 1
 	fi
-	rm -f "$tmp.json"
-	rm -f "$tmp.nft"
+	if [ ! -s "$tmp.nft" ]; then
+		ss_log "nft template empty: $(tr '\n' ' ' <"$tmp.utpl.err" 2>/dev/null)"
+		rm -f "$tmp.json" "$tmp.nft" "$tmp.utpl.err"
+		return 1
+	fi
+	if cmp -s "$tmp.nft" "$ssrules_nft"; then
+		ss_log "nft rules unchanged"
+		rm -f "$tmp.json" "$tmp.nft" "$tmp.utpl.err"
+		return 0
+	fi
+	echo "table inet chk {include \"$tmp.nft\";}" >"$tmp.nft.chk"
+	if nft -f "$tmp.nft.chk" -c 2>"$tmp.nft.err"; then
+		mv "$tmp.nft" "$ssrules_nft"
+		fw4 restart
+		ss_log "nft rules installed"
+		rm -f "$tmp.json" "$tmp.nft.chk" "$tmp.nft.err" "$tmp.utpl.err"
+		return 0
+	fi
+	ss_log "nft -c fail: $(tr '\n' ' ' <"$tmp.nft.err" 2>/dev/null)"
+	rm -f "$tmp.json" "$tmp.nft" "$tmp.nft.chk" "$tmp.nft.err" "$tmp.utpl.err"
+	return 1
 }
 
 ss_rules_nft_reset() {
@@ -186,6 +249,7 @@ ss_rules_nft_reset() {
 
 ss_rules() {
 	if ! ss_rules_nft_gen; then
+		ss_log "nft not applied (gen failed or rules disabled), resetting"
 		ss_rules_nft_reset
 	fi
 }
@@ -205,11 +269,49 @@ ss_json_esc() {
 	echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+ss_xray_inbounds() {
+	cat <<'EOF'
+  "inbounds": [
+    {"tag": "redir", "port": 1234, "protocol": "dokodemo-door", "settings": {"network": "tcp,udp", "followRedirect": true}, "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}},
+    {"tag": "dns", "listen": "127.0.0.1", "port": 8053, "protocol": "dokodemo-door", "settings": {"address": "8.8.8.8", "port": 53, "network": "tcp,udp"}}
+  ]
+EOF
+}
+
 ss_xray_write() {
-	local node="$1"
-	local host port uuid aid net tls path whost security proto users
-	host=$(uci -q get shadowsocks-libev."$node".server)
+	local node="$1" kind="$2"
+	local host orig port uuid aid net tls path whost security proto users method password ip
+	orig=$(uci -q get shadowsocks-libev."$node".server)
 	port=$(uci -q get shadowsocks-libev."$node".server_port)
+	ip=$(ss_resolve4 "$orig")
+	host=${ip:-$orig}
+	[ "$host" != "$orig" ] && ss_log "resolved $orig -> $host"
+	mkdir -p /var/etc
+	if [ "$kind" = ss ]; then
+		method=$(uci -q get shadowsocks-libev."$node".method)
+		password=$(uci -q get shadowsocks-libev."$node".password)
+		[ -n "$method" ] || method=aes-256-gcm
+		cat >/var/etc/xray.json <<EOF
+{
+  "log": {"loglevel": "warning"},
+$(ss_xray_inbounds),
+  "outbounds": [
+    {
+      "protocol": "shadowsocks",
+      "settings": {
+        "servers": [{
+          "address": "$(ss_json_esc "$host")",
+          "port": ${port:-0},
+          "method": "$(ss_json_esc "$method")",
+          "password": "$(ss_json_esc "$password")"
+        }]
+      }
+    }
+  ]
+}
+EOF
+		return 0
+	fi
 	uuid=$(uci -q get shadowsocks-libev."$node".uuid)
 	[ -n "$uuid" ] || uuid=$(uci -q get shadowsocks-libev."$node".password)
 	aid=$(uci -q get shadowsocks-libev."$node".alter_id)
@@ -232,21 +334,18 @@ ss_xray_write() {
 	else
 		users="{\"id\": \"$(ss_json_esc "$uuid")\", \"alterId\": ${aid}, \"security\": \"$(ss_json_esc "$security")\"}"
 	fi
-	mkdir -p /var/etc
+	[ -n "$whost" ] || whost=$orig
 	cat >/var/etc/xray.json <<EOF
 {
   "log": {"loglevel": "warning"},
-  "inbounds": [
-    {"tag": "redir", "port": 1234, "protocol": "dokodemo-door", "settings": {"network": "tcp,udp", "followRedirect": true}, "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}},
-    {"tag": "dns", "listen": "127.0.0.1", "port": 8053, "protocol": "dokodemo-door", "settings": {"address": "8.8.8.8", "port": 53, "network": "tcp,udp"}}
-  ],
+$(ss_xray_inbounds),
   "outbounds": [
     {
       "protocol": "$proto",
       "settings": {"vnext": [{"address": "$(ss_json_esc "$host")", "port": ${port:-0}, "users": [$users]}]},
       "streamSettings": {
         "network": "$(ss_json_esc "$net")",
-        "security": "$([ "$tls" = tls ] && echo tls || echo none)"$([ "$net" = ws ] && printf ',\n        "wsSettings": {"path": "%s", "headers": {"Host": "%s"}}' "$(ss_json_esc "$path")" "$(ss_json_esc "$whost")")$([ "$tls" = tls ] && printf ',\n        "tlsSettings": {"serverName": "%s"}' "$(ss_json_esc "${whost:-$host}")")
+        "security": "$([ "$tls" = tls ] && echo tls || echo none)"$([ "$net" = ws ] && printf ',\n        "wsSettings": {"path": "%s", "headers": {"Host": "%s"}}' "$(ss_json_esc "$path")" "$(ss_json_esc "$whost")")$([ "$tls" = tls ] && printf ',\n        "tlsSettings": {"serverName": "%s"}' "$(ss_json_esc "$whost")")
       }
     }
   ]
@@ -256,38 +355,46 @@ EOF
 
 ss_copy_easy_remote() {
 	local node="$1"
-	local host port method password key plugin plugin_opts
-	host=$(uci -q get shadowsocks-libev."$node".server)
+	local host orig port method password key
+	orig=$(uci -q get shadowsocks-libev."$node".server)
+	host=$(ss_resolve4 "$orig")
+	host=${host:-$orig}
 	port=$(uci -q get shadowsocks-libev."$node".server_port)
 	method=$(uci -q get shadowsocks-libev."$node".method)
 	password=$(uci -q get shadowsocks-libev."$node".password)
 	key=$(uci -q get shadowsocks-libev."$node".key)
-	plugin=$(uci -q get shadowsocks-libev."$node".plugin)
-	plugin_opts=$(uci -q get shadowsocks-libev."$node".plugin_opts)
-	# Keep the imported cipher. Do not invent a different method.
-	if [ -n "$plugin" ] && [ ! -x "/usr/bin/$plugin" ] && [ ! -x "/usr/bin/${plugin##*/}" ]; then
-		logger -t ss-easy "skip plugin $plugin (binary missing), use plain SS"
-		plugin=
-		plugin_opts=
-	fi
 	uci -q set shadowsocks-libev.easy_remote=server
 	uci -q set shadowsocks-libev.easy_remote.disabled=0
 	uci -q set shadowsocks-libev.easy_remote.server="$host"
 	uci -q set shadowsocks-libev.easy_remote.server_port="$port"
 	uci -q set shadowsocks-libev.easy_remote.method="$method"
 	uci -q set shadowsocks-libev.easy_remote.password="$password"
+	uci -q delete shadowsocks-libev.easy_remote.plugin
+	uci -q delete shadowsocks-libev.easy_remote.plugin_opts
 	[ -n "$key" ] && uci -q set shadowsocks-libev.easy_remote.key="$key" || uci -q delete shadowsocks-libev.easy_remote.key
-	if [ -n "$plugin" ]; then
-		uci -q set shadowsocks-libev.easy_remote.plugin="$plugin"
-		uci -q set shadowsocks-libev.easy_remote.plugin_opts="$plugin_opts"
-	else
-		uci -q delete shadowsocks-libev.easy_remote.plugin
-		uci -q delete shadowsocks-libev.easy_remote.plugin_opts
-	fi
+}
+
+ss_dns_watch() {
+	local n=0
+	while [ $n -lt 20 ]; do
+		if ss_listening 8053; then
+			ss_easy_dns 1
+			ss_log "DNS hijack on (8053 is up)"
+			/usr/libexec/ss-easy-status.sh >/dev/null 2>&1 || true
+			return 0
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+	ss_easy_dns 0
+	ss_log "8053 never listened; DNS not hijacked (see status)"
+	/usr/libexec/ss-easy-status.sh >/dev/null 2>&1 || true
 }
 
 ss_easy_sync() {
-	local enabled mode node remote on proto typ
+	local enabled mode node remote on proto typ method plugin
+	ss_on_ss=0
+	ss_on_xray=0
 	enabled=$(uci -q get shadowsocks-libev.easy.enabled)
 	[ -n "$enabled" ] || return 0
 	mode=$(uci -q get shadowsocks-libev.easy.mode)
@@ -295,29 +402,44 @@ ss_easy_sync() {
 	[ -z "$node" ] && node=$(uci -q get shadowsocks-libev.easy.server)
 	proto=$(uci -q get shadowsocks-libev."$node".protocol)
 	[ -n "$proto" ] || proto=ss
+	method=$(uci -q get shadowsocks-libev."$node".method)
+	plugin=$(uci -q get shadowsocks-libev."$node".plugin)
 	[ "$enabled" = 1 ] && [ -n "$node" ] && on=1 || on=0
 
 	uci -q set shadowsocks-libev.sss0.disabled=1
 	uci -q set shadowsocks-libev.hi.disabled=1
 	uci -q set shadowsocks-libev.hj.disabled=1
 
-	ss_on_ss=0
-	[ "$on" = 1 ] && [ "$proto" = ss ] && ss_on_ss=1
-
-	# Official ss-redir only accepts UCI type "server" as remote.
-	remote=
-	if [ "$ss_on_ss" = 1 ]; then
-		typ=$(uci -q get "shadowsocks-libev.$node")
-		if [ "$typ" = server ]; then
-			remote=$node
-			uci -q set shadowsocks-libev."$node".disabled=0
-		else
-			ss_copy_easy_remote "$node"
-			remote=easy_remote
-		fi
+	if [ "$on" = 1 ] && [ -n "$plugin" ]; then
+		ss_log "ERROR: plugin $plugin is not in this firmware; will not start a fake plain SS"
+		on=0
 	fi
-	[ -n "$remote" ] || remote=easy_remote
-	ss_log "sync enabled=$enabled on=$on proto=$proto node=$node remote=$remote"
+
+	if [ "$on" = 1 ]; then
+		case "$proto" in
+			vmess|vless)
+				ss_on_xray=1 ;;
+			ss)
+				if ss_method_libev_ok "$method"; then
+					ss_on_ss=1
+				else
+					ss_on_xray=1
+					ss_log "SS method $method is not libev; use Xray"
+				fi
+				;;
+			*)
+				ss_log "ERROR: unknown protocol $proto"
+				on=0 ;;
+		esac
+	fi
+
+	remote=easy_remote
+	if [ "$ss_on_ss" = 1 ]; then
+		ss_copy_easy_remote "$node"
+		remote=easy_remote
+		uci -q set shadowsocks-libev."$node".disabled=0
+	fi
+	ss_log "sync enabled=$enabled on=$on proto=$proto method=$method node=$node ss=$ss_on_ss xray=$ss_on_xray remote=$remote"
 
 	uci -q batch <<-EOF
 		set shadowsocks-libev.easy_redir=ss_redir
@@ -343,18 +465,20 @@ ss_easy_sync() {
 	EOF
 
 	rm -f /var/etc/xray.json
-	if [ "$on" = 1 ] && { [ "$proto" = vmess ] || [ "$proto" = vless ]; }; then
-		ss_xray_write "$node"
-		if [ -x /tmp/xray-root/usr/bin/xray ] || [ -x /usr/bin/xray ]; then
+	if [ "$ss_on_xray" = 1 ]; then
+		if [ "$proto" = ss ]; then
+			ss_xray_write "$node" ss
+		else
+			ss_xray_write "$node" v2
+		fi
+		if ss_xray_bin >/dev/null; then
 			ss_log "xray binary ready"
 		else
 			on=0
+			ss_on_xray=0
 			rm -f /var/etc/xray.json
 			uci -q set shadowsocks-libev.ss_rules.disabled=1
-			ss_log "xray missing; fetch in background, do not hijack DNS"
-			if mkdir /tmp/xray-fetching 2>/dev/null; then
-				( /usr/libexec/xray-ram-fetch.sh; rmdir /tmp/xray-fetching 2>/dev/null; /etc/init.d/shadowsocks-libev restart ) >>/tmp/xray-ram.log 2>&1 &
-			fi
+			ss_fetch_xray_bg
 		fi
 	fi
 
@@ -374,34 +498,34 @@ ss_easy_sync() {
 		EOF
 	fi
 	uci -q commit shadowsocks-libev
-	ss_easy_dns "$on"
+	# Never hijack DNS here: procd has not started ss-tunnel/xray yet.
+	ss_easy_want_dns=$on
 }
 
 start_service() {
-	local cfgtype xray
+	local cfgtype xray node proto
 
 	mkdir -p "$ss_confdir"
+	ss_easy_want_dns=0
+	ss_on_xray=0
 	ss_easy_sync
 	config_load shadowsocks-libev
 	for cfgtype in ss_local ss_redir ss_server ss_tunnel; do
 		config_foreach ss_xxx "$cfgtype" "$cfgtype"
 	done
-	if [ "$(uci -q get shadowsocks-libev.easy.enabled)" = 1 ]; then
-		ss_redir_servers="$ss_redir_servers $(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).server)"
-		# VMess uses Xray on :1234, not ss-redir, so nft ports must be set here.
-		# SS lets ss_xxx/ss_rules_cb set ports only when ss-redir actually started.
-		if { [ "$(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).protocol)" = vmess ] \
-			|| [ "$(uci -q get shadowsocks-libev.$(uci -q get shadowsocks-libev.easy.node).protocol)" = vless ]; } \
-			&& { [ -x /tmp/xray-root/usr/bin/xray ] || [ -x /usr/bin/xray ]; }; then
+	node=$(uci -q get shadowsocks-libev.easy.node)
+	if [ "$(uci -q get shadowsocks-libev.easy.enabled)" = 1 ] && [ -n "$node" ]; then
+		ss_redir_servers="$ss_redir_servers $(uci -q get shadowsocks-libev.$node.server)"
+		proto=$(uci -q get shadowsocks-libev.$node.protocol)
+		if [ -s /var/etc/xray.json ] && ss_xray_bin >/dev/null; then
 			ss_rules_redir_tcp_easy_redir=1234
 			ss_rules_redir_udp_easy_redir=1234
 		fi
 	fi
 	ss_rules
 	if [ -s /var/etc/xray.json ]; then
-		xray=/tmp/xray-root/usr/bin/xray
-		[ -x "$xray" ] || xray=/usr/bin/xray
-		if [ -x "$xray" ]; then
+		xray=$(ss_xray_bin) || xray=
+		if [ -n "$xray" ]; then
 			procd_open_instance xray
 			procd_set_param command "$xray" run -c /var/etc/xray.json
 			procd_set_param file /var/etc/xray.json
@@ -409,8 +533,13 @@ start_service() {
 			procd_close_instance
 			ss_log "started xray $xray"
 		else
-			ss_log "vmess needs Xray in RAM; see /tmp/xray-ram.log"
+			ss_log "xray json present but binary missing"
 		fi
+	fi
+	if [ "$ss_easy_want_dns" = 1 ]; then
+		( ss_dns_watch ) >/dev/null 2>&1 &
+	else
+		ss_easy_dns 0
 	fi
 	/usr/libexec/ss-easy-status.sh >/dev/null 2>&1 || true
 }

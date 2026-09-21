@@ -1,0 +1,11 @@
+#!/bin/sh
+# Flush LuCI/rpcd after v12 ACL + proxy start-order changes.
+rm -f /tmp/luci-indexcache* 2>/dev/null || true
+rm -rf /tmp/luci-modulecache /tmp/luci-indexcache 2>/dev/null || true
+/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+# Stop IPv6 RA so clients do not bypass the v4 transparent proxy.
+uci -q set dhcp.lan.dhcpv6='disabled'
+uci -q set dhcp.lan.ra='disabled'
+uci -q set dhcp.lan.ra_slaac='0'
+uci -q commit dhcp
+exit 0
