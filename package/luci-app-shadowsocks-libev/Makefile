@@ -6,9 +6,9 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI K2P proxy (k2p-proxy-v12)
+LUCI_TITLE:=LuCI K2P proxy (k2p-proxy-v13)
 LUCI_DEPENDS:=+luci-base +shadowsocks-libev-config +shadowsocks-libev-ss-redir +shadowsocks-libev-ss-tunnel +shadowsocks-libev-ss-rules +unzip
-PKG_VERSION:=12
+PKG_VERSION:=13
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0

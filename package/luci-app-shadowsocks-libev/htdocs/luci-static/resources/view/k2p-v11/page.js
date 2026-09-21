@@ -5,7 +5,7 @@
 'require fs';
 
 var conf = 'shadowsocks-libev';
-var PAGE = 'k2p-proxy-v12';
+var PAGE = 'k2p-proxy-v13';
 var latencies = {};
 
 function parseProbe(text) {
@@ -514,19 +514,21 @@ return view.extend({
 					s.plugin || '', s.plugin_opts || ''
 				].join('\t'));
 			});
-			return uci.save().then(function() {
-				return fs.write('/tmp/ss-easy-ui.txt', lines.join('\n') + '\n').catch(function() {});
-			}).then(function() {
-				if (doApply && typeof uci.apply === 'function')
-					return uci.apply(0);
+			var dump = lines.join('\n') + '\n';
+			return fs.write('/tmp/ss-easy-ui.txt', dump).catch(function() {}).then(function() {
+				return uci.save().catch(function() {});
 			});
 		}
 
 		function loadStatus() {
 			return fs.exec('/usr/libexec/ss-easy-status.sh', [], null, 20000).then(function(res) {
 				statusBox.textContent = (res && res.stdout) || '';
-			}).catch(function(err) {
-				statusBox.textContent = String(err);
+			}).catch(function() {
+				return fs.read('/tmp/ss-easy-status.txt').then(function(t) {
+					statusBox.textContent = t || _('读状态失败');
+				}).catch(function(err) {
+					statusBox.textContent = String(err);
+				});
 			});
 		}
 
@@ -555,15 +557,18 @@ return view.extend({
 					ui.addNotification(null, E('p', _('请先点「选用」选一个节点')), 'warning');
 					return;
 				}
-				statusBox.textContent = _('正在保存并后台启动，请等几秒再看下面的状态…');
+				statusBox.textContent = _('正在保存并启动代理，请等几秒…不要点右上角「未保存的更改」。');
 				return persist(true).then(function() {
 					return fs.exec('/usr/libexec/ss-easy-apply.sh', [], null, 120000);
-				}).then(function() {
-					ui.addNotification(null, E('p', _('已保存。请看下面状态：ss-redir/xray 必须在跑，listen-1234 不能是 none。VMess 首次会后台下载 Xray。')), 'info');
-					return loadStatus();
+				}).then(function(res) {
+					var out = (res && res.stdout) || '';
+					if (out)
+						statusBox.textContent = out;
+					ui.addNotification(null, E('p', _('已交给路由器启动。看下面：ss-redir 或 xray 要在跑，listen-1234 不能是 none。')), 'info');
+					return out ? null : loadStatus();
 				}).catch(function(err) {
-					statusBox.textContent = String(err);
 					ui.addNotification(null, E('p', String(err)), 'error');
+					return loadStatus();
 				});
 			})
 		}, _('保存并应用'));
@@ -592,7 +597,7 @@ return view.extend({
 
 		return E('div', { class: 'cbi-map', id: PAGE }, [
 			E('h2', {}, _('简易代理')),
-			E('p', {}, _('版本 %s：延迟是路由器到节点的 TCP，不是 Google。开代理后看状态里 ss-redir/xray 和 listen-1234。').format(PAGE)),
+			E('p', {}, _('版本 %s：点「保存并应用」即可，不要点黄色栏去应用全局更改。延迟是路由器到节点的 TCP。').format(PAGE)),
 			E('div', { class: 'cbi-section' }, [
 				E('h3', {}, _('开关')),
 				E('div', { class: 'cbi-value' }, [

@@ -159,8 +159,8 @@ jobs:
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
-        echo "Phicomm K2P: official OpenWrt v24.10.8 + one SS/VMess/VLESS page (k2p-proxy-v12)." >> release.txt
-        echo "Confirm: http://192.168.1.1/k2p-proxy-version.txt must say k2p-proxy-v12." >> release.txt
+        echo "Phicomm K2P: official OpenWrt v24.10.8 + one SS/VMess/VLESS page (k2p-proxy-v13)." >> release.txt
+        echo "Confirm: http://192.168.1.1/k2p-proxy-version.txt must say k2p-proxy-v13." >> release.txt
         echo "Web UI: http://192.168.1.1  Breed Phicomm layout. Use only squashfs-sysupgrade.bin." >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 

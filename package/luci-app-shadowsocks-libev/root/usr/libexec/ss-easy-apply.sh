@@ -1,9 +1,7 @@
 #!/bin/sh
-# Import UI dump into UCI, then let the init script start proxy + nft.
+# Import UI dump into UCI, then start proxy. Do not go through LuCI uci/apply.
 LOG=/tmp/ss-easy.log
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; echo "$*"; }
-
-json_esc() { echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 if [ -f /tmp/ss-easy-ui.txt ]; then
 	enabled=; mode=; node=

@@ -1,6 +1,6 @@
 # Actions-OpenWrt-K2P
 
-官方 OpenWrt **v24.10.8** + 简化 Shadowsocks / VMess（**k2p-proxy-v12**）。
+官方 OpenWrt **v24.10.8** + 简化 Shadowsocks / VMess（**k2p-proxy-v13**）。
 
 ## 刷机
 

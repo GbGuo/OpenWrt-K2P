@@ -552,7 +552,8 @@ stop_service() {
 
 service_triggers() {
 	procd_add_reload_interface_trigger wan
-	procd_add_reload_trigger shadowsocks-libev
+	# Do not procd_add_reload_trigger shadowsocks-libev:
+	# LuCI uci/apply would restart this service (fw4) and hit ubus code 5 未收到数据.
 	procd_open_validate
 	validate_server_section
 	validate_ss_local_section
