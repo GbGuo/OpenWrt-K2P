@@ -1,0 +1,43 @@
+#!/bin/sh /etc/rc.common
+# Boot-time auto-start for the "简易代理" page.
+# Re-downloads xray to RAM if a vmess/vless/trojan node is enabled (RAM is wiped
+# on reboot), or re-applies the SS backend if an ss node is enabled.
+
+START=99
+
+start() {
+	(
+		# wait for a default route (WAN up) before trying to download
+		n=0
+		while [ "$n" -lt 180 ]; do
+			if ip route show default 2>/dev/null | grep -q .; then
+				break
+			fi
+			sleep 3
+			n=$((n + 3))
+		done
+
+		enabled=$(uci -q get shadowsocks-libev.easy.enabled)
+		node=$(uci -q get shadowsocks-libev.easy.node)
+		proto=$(uci -q get "shadowsocks-libev.$node.proto" 2>/dev/null)
+		[ -n "$proto" ] || proto=ss
+
+		if [ "$enabled" = 1 ] && [ "$proto" != ss ]; then
+			/usr/libexec/xray-easy-up.sh >/tmp/xray-boot.log 2>&1
+		elif [ "$enabled" = 1 ]; then
+			/etc/init.d/shadowsocks-libev enable >/dev/null 2>&1
+			/usr/libexec/ss-official-up.sh >/tmp/ss-boot.log 2>&1
+		else
+			/usr/libexec/xray-easy-up.sh stop >/dev/null 2>&1
+			/etc/init.d/shadowsocks-libev stop >/dev/null 2>&1
+		fi
+	) &
+}
+
+stop() {
+	/usr/libexec/xray-easy-up.sh stop >/dev/null 2>&1
+	/etc/init.d/shadowsocks-libev stop >/dev/null 2>&1
+	# also clean up any stale tproxy policy route (idempotent)
+	ip -4 rule del fwmark 1 lookup 100 2>/dev/null || true
+	ip -4 route flush table 100 2>/dev/null || true
+}

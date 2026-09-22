@@ -1,6 +1,7 @@
 #!/bin/sh
 
 mkdir -p /etc/shadowsocks-libev
-chmod 755 /usr/libexec/ss-official-up.sh /usr/libexec/ss-easy-probe.sh 2>/dev/null || true
+chmod 755 /usr/libexec/ss-official-up.sh /usr/libexec/ss-easy-probe.sh /usr/libexec/xray-easy-up.sh /etc/init.d/easy-proxy 2>/dev/null || true
+[ -x /etc/init.d/easy-proxy ] && /etc/init.d/easy-proxy enable 2>/dev/null
 /etc/init.d/rpcd reload
 exit 0

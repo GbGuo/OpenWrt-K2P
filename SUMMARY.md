@@ -6,6 +6,7 @@
 
 * [安装固件](tutorial/install-the-firmware.md)
 * [更新固件](tutorial/update-the-firmware.md)
+* [使用简易代理](tutorial/use-the-proxy.md)
 * [安装软件包](tutorial/install-custom-packages.md)
 
 ## 常见问题解答 <a id="q-and-a"></a>

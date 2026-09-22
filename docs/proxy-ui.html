@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>简易代理 - K2P</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --card: #fff;
+    --primary: #1a73e8;
+    --danger: #d93025;
+    --success: #1e8e3e;
+    --muted: #5f6368;
+    --border: #dadce0;
+    --code: #1d1d1d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--code);
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 16px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 15px; color: var(--muted); }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  label { font-size: 12px; color: var(--muted); }
+  input, select, textarea {
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 13px; width: 100%;
+    background: #fff; color: var(--code);
+  }
+  textarea { font-family: monospace; min-height: 120px; resize: vertical; }
+  button {
+    border: none; border-radius: 4px; cursor: pointer;
+    padding: 8px 16px; font-size: 13px; font-weight: 500;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-check { background: var(--success); color: #fff; }
+  .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table th { text-align: left; padding: 8px; border-bottom: 2px solid var(--border); color: var(--muted); font-weight: 500; }
+  .table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .table tr.selected { background: #e8f0fe; }
+  .tag {
+    display: inline-block; padding: 2px 6px; border-radius: 3px;
+    font-size: 11px; font-weight: 600;
+  }
+  .tag-ss { background: #e6f4ea; color: var(--success); }
+  .tag-vmess { background: #fce8e6; color: var(--danger); }
+  .tag-vless { background: #e8f0fe; color: var(--primary); }
+  .tag-trojan { background: #fef7e0; color: #b06000; }
+  .status {
+    font-family: monospace; font-size: 12px; background: #111; color: #ddd;
+    padding: 10px; border-radius: 4px; white-space: pre-wrap; min-height: 80px;
+  }
+  .inline { display: flex; align-items: center; gap: 8px; }
+  .spacer { flex: 1; }
+  .help { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .toggle {
+    position: relative; width: 40px; height: 22px; flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider {
+    position: absolute; inset: 0; background: var(--border);
+    border-radius: 22px; cursor: pointer; transition: .2s;
+  }
+  .toggle .slider::before {
+    content: ""; position: absolute; width: 16px; height: 16px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%;
+    transition: .2s;
+  }
+  .toggle input:checked + .slider { background: var(--success); }
+  .toggle input:checked + .slider::before { transform: translateX(18px); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>简易代理</h1>
+  <p style="color:var(--muted);font-size:13px;margin:0 0 16px;">
+    支持 <code>ss://</code> / <code>vmess://</code> / <code>vless://</code> / <code>trojan://</code>
+  </p>
+
+  <!-- 开关 -->
+  <div class="card">
+    <h3>开关</h3>
+    <div class="row">
+      <div class="field" style="max-width:120px">
+        <label>启用代理</label>
+        <label class="toggle"><input type="checkbox" id="on"><span class="slider"></span></label>
+      </div>
+      <div class="field">
+        <label>访问模式</label>
+        <select id="mode">
+          <option value="bypass">绕过大陆（国内直连，国外走代理）</option>
+          <option value="global">全局代理</option>
+        </select>
+      </div>
+      <div class="field" style="flex:2">
+        <label>当前节点</label>
+        <div id="curNode" style="font-size:13px;color:var(--muted);padding:8px 0">还没有节点，请先粘贴链接并添加</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加节点 -->
+  <div class="card">
+    <h3>添加节点</h3>
+    <p class="help">每行一个链接，一次性粘贴多个。</p>
+    <textarea id="links" placeholder="ss://...&#10;vmess://...&#10;vless://...&#10;trojan://..."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="btn-primary" onclick="addNodes()">添加节点</button>
+      <button class="btn-check" onclick="applyAll()">保存并应用</button>
+      <button class="btn-ghost" onclick="probe()">测试延迟</button>
+      <div class="spacer"></div>
+      <a href="#" onclick="alert('查看路由 Web 后台 → 状态 → 系统日志')">日志</a>
+    </div>
+  </div>
+
+  <!-- 节点列表 -->
+  <div class="card">
+    <h3>节点列表（点「选用」）</h3>
+    <table class="table">
+      <thead><tr>
+        <th>协议</th><th>名称</th><th>地址</th><th>端口</th><th>延迟</th><th>操作</th>
+      </tr></thead>
+      <tbody id="nodeList">
+        <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">还没有节点</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 状态 -->
+  <div class="card">
+    <h3>运行状态</h3>
+    <p class="help">SS 看 ss-redir / listen-1234；Xray 看 xray / listen-1235。关掉开关再点「保存并应用」会停掉代理。</p>
+    <div class="status" id="status">还没有状态。勾选开关、选好模式和节点后，点「保存并应用」。</div>
+  </div>
+
+  <!-- 下载源 -->
+  <div class="card">
+    <h3>下载源（Xray 内核与 geo 数据）</h3>
+    <div class="field">
+      <label>镜像前缀</label>
+      <input id="mirror" value="https://gh-proxy.com/" placeholder="https://gh-proxy.com/">
+    </div>
+    <p class="help">默认公共加速镜像，挂了可换成其它 gh 加速前缀。</p>
+  </div>
+</div>
+
+<script>
+var nodes = [];
+var selected = null;
+
+// 模拟 4 个节点
+function seed() {
+  nodes = [
+    { proto:'ss',   name:'节点A', server:'1.2.3.4', port:'443', alias:'节点A', latency:'32ms' },
+    { proto:'vmess',name:'hk-01', server:'hk.x.com',port:'443', alias:'hk-01', latency:'128ms' },
+    { proto:'vless',name:'jp',    server:'jp.x.com',port:'443', alias:'jp',    latency:'89ms'  },
+    { proto:'trojan',name:'sg',   server:'sg.x.com',port:'443', alias:'sg',    latency:'—'   },
+  ];
+  selected = nodes[0].name;
+  render();
+}
+
+function protoTag(p) {
+  var cls = {ss:'tag-ss',vmess:'tag-vmess',vless:'tag-vless',trojan:'tag-trojan'}[p]||'tag-ss';
+  return '<span class="tag '+cls+'">'+(p||'SS').toUpperCase()+'</span>';
+}
+
+function render() {
+  var tbody = document.getElementById('nodeList');
+  if (!nodes.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">还没有节点</td></tr>';
+  } else {
+    tbody.innerHTML = nodes.map(function(n,i) {
+      var sel = n.name === selected ? 'selected' : '';
+      return '<tr class="'+sel+'">\
+        <td>'+protoTag(n.proto)+'</td>\
+        <td>'+esc(n.alias||n.name)+'</td>\
+        <td>'+esc(n.server)+'</td>\
+        <td>'+esc(n.port)+'</td>\
+        <td>'+esc(n.latency)+'</td>\
+        <td>\
+          <button class="btn-sm btn-'+(n.name===selected?'check':'ghost')+'" onclick="pick('+i+')">'+(n.name===selected?'当前使用':'选用')+'</button>\
+          <button class="btn-sm btn-ghost" onclick="del('+i+')" style="margin-left:4px">删除</button>\
+        </td>\
+      </tr>';
+    }).join('');
+  }
+  var cur = nodes.find(function(n){return n.name===selected;});
+  document.getElementById('curNode').textContent = cur
+    ? cur.proto.toUpperCase()+'  '+cur.alias+'  '+cur.server+':'+cur.port
+    : '还没有节点';
+}
+
+function pick(i) { selected = nodes[i].name; render(); }
+function del(i) {
+  nodes.splice(i,1);
+  if (selected===nodes[i]?.name) selected = nodes[0]?.name || null;
+  render();
+}
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function addNodes() {
+  var lines = document.getElementById('links').value.split(/[\r\n]+/).filter(Boolean);
+  if (!lines.length) return;
+  // 模拟解析
+  lines.forEach(function(line) {
+    var proto = line.startsWith('vmess')?'vmess':line.startsWith('vless')?'vless':line.startsWith('trojan')?'trojan':'ss';
+    nodes.push({proto:proto, name:'新节点'+(nodes.length+1), server:'example.com', port:'443', alias:proto.toUpperCase()+'节点', latency:'—'});
+  });
+  document.getElementById('links').value = '';
+  selected = nodes[nodes.length-1].name;
+  render();
+}
+
+function applyAll() {
+  var on = document.getElementById('on').checked;
+  var mode = document.getElementById('mode').value;
+  var status = document.getElementById('status');
+  if (!on) { status.textContent = '代理已关闭。'; return; }
+  if (!selected) { alert('请先选用一个节点'); return; }
+  status.textContent = '正在保存并启动…\n请稍候（首次下载约10MB需1-2分钟）';
+  setTimeout(function(){
+    var proto = nodes.find(function(n){return n.name===selected;})?.proto||'ss';
+    var lines = ['mode=' + mode, 'proxy=' + proto.toUpperCase()];
+    if (proto==='ss') {
+      lines.push('ss-redir: running');
+      lines.push('listen-1234: 0.0.0.0:1234');
+      lines.push('listen-8053: 127.0.0.1:8053');
+    } else {
+      lines.push('xray: running');
+      lines.push('listen-1235: 0.0.0.0:1235');
+      lines.push('listen-8053: 127.0.0.1:8053');
+      lines.push('dns='+(mode==='bypass'?'geosite:cn 分流':'全局'));
+    }
+    status.textContent = lines.join('\n');
+  }, 800);
+}
+
+function probe() {
+  var status = document.getElementById('status');
+  status.textContent = '正在测每个节点到路由器的 TCP 延迟…';
+  setTimeout(function(){
+    var lines = [];
+    nodes.forEach(function(n){
+      var ms = Math.floor(Math.random()*200)+10;
+      n.latency = ms+'ms';
+      lines.push(n.name+' = '+ms+'ms');
+    });
+    status.textContent = lines.join('\n');
+    render();
+  }, 600);
+}
+
+seed();
+</script>
+</body>
+</html>

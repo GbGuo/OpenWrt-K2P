@@ -104,6 +104,7 @@ jobs:
         sed -i 's/^CONFIG_TARGET_ROOTFS_INITRAMFS=y/# CONFIG_TARGET_ROOTFS_INITRAMFS is not set/' .config
         grep -q '^CONFIG_PACKAGE_luci-app-shadowsocks-libev=y' .config || { echo "ERROR: luci-app-shadowsocks-libev was dropped from .config"; exit 1; }
         grep -q '^CONFIG_PACKAGE_shadowsocks-libev-ss-redir=y' .config || { echo "ERROR: shadowsocks-libev-ss-redir was dropped from .config"; exit 1; }
+        grep -q '^CONFIG_PACKAGE_curl=y' .config || { echo "ERROR: curl was dropped from .config"; exit 1; }
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
@@ -161,8 +162,9 @@ jobs:
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
-        echo "Phicomm K2P: official OpenWrt v24.10.8 + official Shadowsocks-libev." >> release.txt
-        echo "LuCI: 服务 -> Shadowsocks-libev -> 粘贴 SS. Paste ss:// only. Breed Phicomm layout." >> release.txt
+        echo "Phicomm K2P: official OpenWrt v24.10.8 + official Shadowsocks-libev + runtime Xray." >> release.txt
+        echo "LuCI: 服务 -> Shadowsocks-libev -> 简易代理. Paste ss:// vmess:// vless:// trojan://." >> release.txt
+        echo "SS uses ss-redir; VMess/VLESS/Trojan download Xray to RAM (geosite:cn routing)." >> release.txt
         echo "Web UI: http://192.168.1.1  Breed Phicomm layout. Use only squashfs-sysupgrade.bin." >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 

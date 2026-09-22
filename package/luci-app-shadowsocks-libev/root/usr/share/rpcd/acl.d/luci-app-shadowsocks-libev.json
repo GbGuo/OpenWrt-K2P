@@ -13,13 +13,15 @@
 		},
 		"write": {
 			"ubus": {
-				"file": [ "exec" ]
+				"file": [ "read", "write", "exec", "stat" ]
 			},
 			"file": {
 				"/etc/shadowsocks-libev/*": [ "write" ],
 				"/etc/init.d/shadowsocks-libev": [ "exec" ],
 				"/usr/libexec/ss-official-up.sh": [ "exec" ],
 				"/usr/libexec/ss-easy-probe.sh": [ "exec" ],
+				"/usr/libexec/xray-easy-up.sh": [ "exec" ],
+				"/tmp/xray-config.json": [ "write" ],
 				"/tmp/ss-easy-probe.txt": [ "read" ]
 			},
 			"uci": [ "shadowsocks-libev" ]

@@ -1,5 +1,7 @@
 #!/bin/sh
 # Apply official shadowsocks-libev from the easy page. No LuCI uci/apply.
+# Stop the xray backend first (it may own the same 8053 dns port).
+/usr/libexec/xray-easy-up.sh stop >/dev/null 2>&1 || true
 enabled=$(uci -q get shadowsocks-libev.easy.enabled)
 /etc/init.d/shadowsocks-libev enable >/dev/null 2>&1 || true
 /etc/init.d/shadowsocks-libev restart
