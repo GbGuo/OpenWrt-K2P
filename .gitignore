@@ -3,3 +3,4 @@ openwrt/
 dl/
 /bin/
 *.swp
+.tmp-ss-src/

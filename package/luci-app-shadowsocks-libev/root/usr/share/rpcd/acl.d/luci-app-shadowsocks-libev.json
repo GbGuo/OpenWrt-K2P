@@ -1,0 +1,22 @@
+{
+	"luci-app-shadowsocks-libev": {
+		"description": "Grant service list access to LuCI app shadowsocks-libev",
+		"read": {
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"uci": [ "shadowsocks-libev" ]
+		},
+		"write": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"file": {
+				"/etc/shadowsocks-libev/*": [ "write" ],
+				"/etc/init.d/shadowsocks-libev": [ "exec" ],
+				"/usr/libexec/ss-official-up.sh": [ "exec" ]
+			},
+			"uci": [ "shadowsocks-libev" ]
+		}
+	}
+}
