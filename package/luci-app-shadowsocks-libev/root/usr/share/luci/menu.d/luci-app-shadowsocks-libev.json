@@ -11,7 +11,7 @@
 	},
 
 	"admin/services/shadowsocks-libev/import": {
-		"title": "粘贴 SS",
+		"title": "简易代理",
 		"order": 5,
 		"action": {
 			"type": "view",

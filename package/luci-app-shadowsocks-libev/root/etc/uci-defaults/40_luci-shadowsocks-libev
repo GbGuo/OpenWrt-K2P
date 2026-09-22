@@ -1,6 +1,6 @@
 #!/bin/sh
 
 mkdir -p /etc/shadowsocks-libev
-chmod 755 /usr/libexec/ss-official-up.sh 2>/dev/null || true
+chmod 755 /usr/libexec/ss-official-up.sh /usr/libexec/ss-easy-probe.sh 2>/dev/null || true
 /etc/init.d/rpcd reload
 exit 0
